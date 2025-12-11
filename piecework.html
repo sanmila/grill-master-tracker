@@ -6,7 +6,6 @@
     <title>Grill Master Piecework Tracker</title>
     <script src="https://apis.google.com/js/api.js"></script>
     <style>
-        /* Same CSS as previous version */
         * { margin:0; padding:0; box-sizing:border-box; font-family:Arial,sans-serif; }
         body { background:#1a1a1a; color:#fff; padding:20px; max-width:500px; margin:auto; }
         .hidden { display:none; }
@@ -33,7 +32,10 @@
         .status.active { background:#28a745; color:#fff; }
         .status.blocked { background:#dc3545; color:#fff; }
         .sync-status { background:#444; padding:10px; border-radius:8px; text-align:center; margin:10px 0; }
-        @media (max-width:480px) { body { padding:10px; } .date-picker, .user-row, .login-row { flex-direction:column; align-items:stretch; } }
+        @media (max-width:480px) {
+            body { padding:10px; }
+            .date-picker, .user-row, .login-row { flex-direction:column; align-items:stretch; }
+        }
     </style>
 </head>
 <body>
@@ -44,7 +46,7 @@
             <p>Worker ID + Password</p>
         </div>
         <div class="login-row">
-            <input type="text" id="loginId" placeholder="Worker ID (e.g. Laser01)">
+            <input type="text" id="loginId" placeholder="Worker ID (e.g. laser01)">
             <input type="password" id="loginPass" placeholder="Password">
         </div>
         <button onclick="login()">🔑 Login</button>
@@ -56,7 +58,7 @@
             <h1 id="welcomeMsg">Welcome</h1>
             <button onclick="logout()" style="width:auto; background:#dc3545; padding:10px 20px;">Logout</button>
         </div>
-        
+
         <select id="role">
             <option value="">Select Role</option>
             <option value="laser">Laser Operator (sheets)</option>
@@ -64,12 +66,12 @@
             <option value="painter">Painter (sets)</option>
             <option value="packer">Packer (sets)</option>
         </select>
-        
+
         <input type="number" id="quantity" placeholder="Quantity completed today" min="0">
         <div class="today-total" id="todayTotal">Daily Total: 0 RUB</div>
         <div class="earnings" id="earningsPreview">Earnings Preview: 0 RUB</div>
-        <div class="sync-status" id="syncStatus">⏳ Syncing...</div>
-        
+        <div class="sync-status" id="syncStatus">⏳ Waiting for entry...</div>
+
         <button onclick="addEntry()">✅ Add Entry & Sync</button>
         <button onclick="showMyEntries()" class="export">📊 My Entries Today</button>
         <div id="workerLog" class="log"></div>
@@ -81,20 +83,19 @@
             <h1>👑 Admin Dashboard</h1>
             <button onclick="logout()" style="width:auto; background:#dc3545; padding:10px 20px;">Logout</button>
         </div>
-        
+
         <div class="sheet-setup">
             <h3>📊 Google Sheets Setup (Admin Only)</h3>
             <input type="text" id="sheetId" placeholder="Google Sheet ID">
             <button onclick="setupGoogleSheet()" class="sync">🔗 Connect Sheet</button>
             <div id="sheetStatus"></div>
         </div>
-        
+
         <div class="admin-panel">
             <h3>Today's Totals</h3>
             <div id="adminToday"></div>
         </div>
 
-        <!-- User Management & other sections same as before -->
         <div class="user-mgmt">
             <h3>👥 User Management</h3>
             <div class="user-row">
@@ -104,111 +105,335 @@
             </div>
             <div id="usersList" class="users-list"></div>
         </div>
-        
+
         <button onclick="exportCSV('today')" class="export">📥 Download Today CSV</button>
     </div>
 
     <script>
+        // ==== CONFIG ====
         const rates = { laser: 150, welder: 500, painter: 200, packer: 100 };
+
         let entries = JSON.parse(localStorage.getItem('piecework') || '[]');
         let users = JSON.parse(localStorage.getItem('workers') || '[{"id":"admin","password":"admin123","active":true}]');
         let currentUser = null;
-        let googleSheetId = localStorage.getItem('sheetId') || '';
+
+        // Pre-fill with your Sheet ID
+        let googleSheetId = localStorage.getItem('sheetId') || '1CiZlY93YrvIb2bEv0wh6pTg0dlijC9FKUrJ0UFLhd_Y';
+
         let gapiLoaded = false;
 
-        // Google Sheets API setup
+        // ==== GOOGLE SHEETS API ====
         function initGoogleSheets() {
-            gapi.load('client:auth2', () => {
+            gapi.load('client', () => {
                 gapi.client.init({
-                    apiKey: 'YOUR_GOOGLE_API_KEY', // Get from Google Cloud Console
+                    apiKey: 'AIzaSyC5PeRbugd3BkTpTW4qG6A_DEnhcKoorpI',
                     discoveryDocs: ['https://sheets.googleapis.com/$discovery/rest?version=v4'],
-                    scope: 'https://www.googleapis.com/auth/spreadsheets'
                 }).then(() => {
                     gapiLoaded = true;
-                    if (googleSheetId) syncAllToSheet();
+                }).catch(err => {
+                    console.error('GAPI init error', err);
                 });
             });
         }
 
         async function saveToGoogleSheet(entry) {
-            if (!gapiLoaded || !googleSheetId) return;
+            if (!gapiLoaded || !googleSheetId) {
+                document.getElementById('syncStatus').textContent = '⚠ Not synced (API not ready or no Sheet ID)';
+                return;
+            }
             try {
                 await gapi.client.sheets.spreadsheets.values.append({
                     spreadsheetId: googleSheetId,
                     range: 'Sheet1!A:F',
                     valueInputOption: 'RAW',
                     resource: {
-                        values: [[entry.workerId, entry.role, entry.date, entry.quantity, entry.earnings, entry.time]]
+                        values: [[
+                            entry.workerId,
+                            entry.role,
+                            entry.date,
+                            entry.quantity,
+                            entry.earnings,
+                            entry.time
+                        ]]
                     }
                 });
                 document.getElementById('syncStatus').textContent = '✅ Synced to Google Sheets';
-            } catch(e) {
+            } catch (e) {
                 console.error('Sheet sync failed:', e);
+                document.getElementById('syncStatus').textContent = '❌ Sync failed';
             }
         }
 
         async function setupGoogleSheet() {
-            const sheetId = document.getElementById('sheetId').value;
-            if (!sheetId) return alert('Enter Sheet ID');
-            
+            const sheetId = document.getElementById('sheetId').value.trim();
+            if (!sheetId) {
+                alert('Enter Sheet ID (from URL /d/ID/edit)');
+                return;
+            }
             googleSheetId = sheetId;
             localStorage.setItem('sheetId', sheetId);
-            document.getElementById('sheetStatus').innerHTML = '<p>✅ Connected! Create Sheet1 with headers: Worker,Role,Date,Qty,Earnings,Time</p>';
-            
-            // Create headers if sheet is empty
-            await saveToGoogleSheet({workerId:'SYSTEM', role:'SETUP', date:'Headers', quantity:0, earnings:0, time:'Auto-sync active'});
+            document.getElementById('sheetStatus').innerHTML =
+                '<p>✅ Connected! Make sure Sheet1 has headers: Worker,Role,Date,Qty,Earnings,Time</p>';
+
+            // Optional: write a header marker row
+            await saveToGoogleSheet({
+                workerId: 'SYSTEM',
+                role: 'SETUP',
+                date: 'Headers',
+                quantity: 0,
+                earnings: 0,
+                time: 'Auto-sync active'
+            });
         }
 
+        // ==== LOCAL STORAGE SAVE ====
         function saveData() {
             localStorage.setItem('piecework', JSON.stringify(entries));
             localStorage.setItem('workers', JSON.stringify(users));
         }
 
-        // Login & other functions same as before...
+        // ==== LOGIN / LOGOUT ====
         function login() {
             const id = document.getElementById('loginId').value.trim().toLowerCase();
             const pass = document.getElementById('loginPass').value;
-            if (!id || !pass) return alert('Enter ID and password');
-            
+            if (!id || !pass) {
+                alert('Enter ID and password');
+                return;
+            }
             const user = users.find(u => u.id === id && u.password === pass && u.active);
-            if (!user) return alert('Invalid credentials');
-            
+            if (!user) {
+                alert('Invalid credentials or blocked user');
+                return;
+            }
+
             currentUser = id;
             document.getElementById('loginScreen').classList.add('hidden');
-            document.getElementById(id === 'admin' ? 'adminScreen' : 'workerScreen').classList.remove('hidden');
-            
-            if (id !== 'admin') {
-                document.getElementById('welcomeMsg').textContent = `Welcome ${id.toUpperCase()}`;
-                showMyEntries();
-            } else {
+
+            if (id === 'admin') {
+                document.getElementById('adminScreen').classList.remove('hidden');
                 showAdminToday();
                 showUsersList();
-                document.getElementById('sheetId').value = googleSheetId;
+                document.getElementById('sheetId').value = googleSheetId || '';
+            } else {
+                document.getElementById('workerScreen').classList.remove('hidden');
+                document.getElementById('welcomeMsg').textContent = 'Welcome ' + id.toUpperCase();
+                showMyEntries();
             }
+
             initGoogleSheets();
+        }
+
+        function logout() {
+            currentUser = null;
+            document.getElementById('loginScreen').classList.remove('hidden');
+            document.getElementById('workerScreen').classList.add('hidden');
+            document.getElementById('adminScreen').classList.add('hidden');
+        }
+
+        // ==== WORKER FUNCTIONS ====
+        function updatePreview() {
+            const role = document.getElementById('role').value;
+            const qty = parseInt(document.getElementById('quantity').value) || 0;
+            if (!role || qty <= 0) {
+                document.getElementById('earningsPreview').textContent = 'Earnings Preview: 0 RUB';
+                return;
+            }
+            const earnings = qty * rates[role];
+            document.getElementById('earningsPreview').textContent =
+                'Earnings Preview: ' + earnings.toLocaleString() + ' RUB';
+        }
+
+        function updateTodayTotal() {
+            const today = new Date().toDateString();
+            const todayEntries = entries.filter(e => e.workerId === currentUser && e.date === today);
+            const sum = todayEntries.reduce((s, e) => s + e.earnings, 0);
+            document.getElementById('todayTotal').textContent =
+                'Daily Total: ' + sum.toLocaleString() + ' RUB';
         }
 
         function addEntry() {
             const role = document.getElementById('role').value;
             const qty = parseInt(document.getElementById('quantity').value) || 0;
-            if (!role || qty === 0) return alert('Select role and enter quantity');
-            
+            if (!role || qty === 0) {
+                alert('Select role and enter quantity');
+                return;
+            }
+
             const earnings = qty * rates[role];
-            const entry = { workerId: currentUser, role, quantity: qty, earnings, date: new Date().toDateString(), time: new Date().toLocaleTimeString() };
-            
+            const now = new Date();
+            const entry = {
+                workerId: currentUser,
+                role,
+                quantity: qty,
+                earnings,
+                date: now.toDateString(),
+                time: now.toLocaleTimeString()
+            };
+
             entries.unshift(entry);
             saveData();
-            saveToGoogleSheet(entry); // Sync to Google Sheets
-            
-            document.getElementById('quantity').value = ''; document.getElementById('role').value = '';
-            updatePreview(); showMyEntries();
-            alert(`Added & Synced! Earnings: ${earnings.toLocaleString()} RUB`);
+            saveToGoogleSheet(entry);
+
+            document.getElementById('quantity').value = '';
+            document.getElementById('role').value = '';
+            updatePreview();
+            showMyEntries();
+            alert('Added & Synced! Earnings: ' + earnings.toLocaleString() + ' RUB');
         }
 
-        // Rest of functions (updatePreview, showMyEntries, createWorker, etc.) same as previous version
-        // ... [Include all previous functions: updatePreview, updateTodayTotal, showMyEntries, createWorker, toggleWorker, deleteWorker, showUsersList, showAdminToday, exportCSV]
+        function showMyEntries() {
+            if (!currentUser) return;
+            const today = new Date().toDateString();
+            const log = document.getElementById('workerLog');
+            log.innerHTML = '';
 
-        // Event listeners
+            const my = entries.filter(e => e.workerId === currentUser && e.date === today);
+            if (my.length === 0) {
+                log.textContent = 'No entries today.';
+            } else {
+                my.forEach(e => {
+                    const div = document.createElement('div');
+                    div.textContent = e.time + ' | ' + e.role + ' | ' + e.quantity +
+                        ' pcs | ' + e.earnings + ' RUB';
+                    log.appendChild(div);
+                });
+            }
+            updateTodayTotal();
+        }
+
+        // ==== USER MANAGEMENT (ADMIN) ====
+        function createWorker() {
+            const idInput = document.getElementById('newWorkerId');
+            const passInput = document.getElementById('newWorkerPass');
+
+            const id = idInput.value.trim().toLowerCase();
+            const password = passInput.value;
+
+            if (!id || !password) {
+                alert('Enter worker ID and password');
+                return;
+            }
+            if (id === 'admin') {
+                alert('"admin" is reserved');
+                return;
+            }
+            if (users.some(u => u.id === id)) {
+                alert('Worker ID already exists');
+                return;
+            }
+
+            users.push({ id, password, active: true });
+            saveData();
+            showUsersList();
+
+            idInput.value = '';
+            passInput.value = '';
+            alert('Worker created');
+        }
+
+        function toggleWorker(id) {
+            const user = users.find(u => u.id === id);
+            if (!user || id === 'admin') return;
+            user.active = !user.active;
+            saveData();
+            showUsersList();
+        }
+
+        function deleteWorker(id) {
+            if (id === 'admin') {
+                alert('Cannot delete admin');
+                return;
+            }
+            if (!confirm('Delete worker ' + id + '?')) return;
+            users = users.filter(u => u.id !== id);
+            saveData();
+            showUsersList();
+        }
+
+        function showUsersList() {
+            const box = document.getElementById('usersList');
+            box.innerHTML = '';
+            users.forEach(u => {
+                const row = document.createElement('div');
+                row.className = 'user-row';
+
+                const info = document.createElement('span');
+                info.textContent = u.id;
+
+                const status = document.createElement('span');
+                status.className = 'status ' + (u.active ? 'active' : 'blocked');
+                status.textContent = u.active ? 'ACTIVE' : 'BLOCKED';
+
+                const toggleBtn = document.createElement('button');
+                toggleBtn.textContent = u.active ? 'Block' : 'Unblock';
+                toggleBtn.onclick = () => toggleWorker(u.id);
+
+                const delBtn = document.createElement('button');
+                delBtn.textContent = '🗑';
+                delBtn.className = 'danger';
+                delBtn.onclick = () => deleteWorker(u.id);
+
+                row.appendChild(info);
+                row.appendChild(status);
+                row.appendChild(toggleBtn);
+                row.appendChild(delBtn);
+
+                box.appendChild(row);
+            });
+        }
+
+        // ==== ADMIN TODAY TOTALS & CSV ====
+        function showAdminToday() {
+            const today = new Date().toDateString();
+            const todayEntries = entries.filter(e => e.date === today);
+
+            const totalsByWorker = {};
+            todayEntries.forEach(e => {
+                if (!totalsByWorker[e.workerId]) totalsByWorker[e.workerId] = 0;
+                totalsByWorker[e.workerId] += e.earnings;
+            });
+
+            const box = document.getElementById('adminToday');
+            box.innerHTML = '';
+            if (todayEntries.length === 0) {
+                box.textContent = 'No entries today.';
+                return;
+            }
+            Object.keys(totalsByWorker).forEach(id => {
+                const div = document.createElement('div');
+                div.textContent = id + ' : ' + totalsByWorker[id].toLocaleString() + ' RUB';
+                box.appendChild(div);
+            });
+        }
+
+        function exportCSV(mode) {
+            const today = new Date().toDateString();
+            let data = entries;
+            if (mode === 'today') {
+                data = entries.filter(e => e.date === today);
+            }
+            let csv = 'Worker,Role,Date,Qty,Earnings,Time\n';
+            data.forEach(e => {
+                csv += [
+                    e.workerId,
+                    e.role,
+                    e.date,
+                    e.quantity,
+                    e.earnings,
+                    e.time
+                ].join(',') + '\n';
+            });
+
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'piecework_' + (mode === 'today' ? 'today' : 'all') + '.csv';
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // ==== EVENT LISTENERS ====
         document.getElementById('quantity').addEventListener('input', updatePreview);
         document.getElementById('role').addEventListener('change', updatePreview);
     </script>
