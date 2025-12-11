@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grill Master Piecework Tracker</title>
+    <script src="https://apis.google.com/js/api.js"></script>
+    <style>
+        /* Same CSS as previous version */
+        * { margin:0; padding:0; box-sizing:border-box; font-family:Arial,sans-serif; }
+        body { background:#1a1a1a; color:#fff; padding:20px; max-width:500px; margin:auto; }
+        .hidden { display:none; }
+        .header { text-align:center; margin-bottom:20px; }
+        .header h1 { color:#ff6b35; font-size:24px; }
+        input,select,button { width:100%; padding:12px; margin:8px 0; border:none; border-radius:8px; font-size:16px; }
+        input,select { background:#333; color:#fff; }
+        button { background:#ff6b35; color:#fff; font-weight:bold; cursor:pointer; }
+        button:hover { background:#e55a2b; }
+        button.admin, button.sync { background:#28a745; }
+        button.admin:hover, button.sync:hover { background:#218838; }
+        button.danger { background:#dc3545; }
+        button.danger:hover { background:#c82333; }
+        .earnings { background:#2d5a2d; padding:20px; border-radius:8px; text-align:center; font-size:20px; font-weight:bold; margin:15px 0; }
+        .log, .users-list { background:#444; padding:15px; border-radius:8px; margin:10px 0; max-height:300px; overflow-y:auto; }
+        .today-total { background:#ff6b35; color:#000; padding:10px; border-radius:8px; text-align:center; font-weight:bold; }
+        .export, .sheet-setup { background:#28a745; margin-top:20px; }
+        .admin-panel, .user-mgmt { background:#1e3a8a; padding:20px; border-radius:12px; margin:20px 0; }
+        .date-picker, .user-row, .login-row { display:flex; gap:10px; align-items:center; margin:10px 0; }
+        .login-row input { flex:1; padding:12px; }
+        .user-row input { flex:1; padding:8px; }
+        .user-row button { width:auto; padding:8px 12px; flex-shrink:0; }
+        .status { padding:5px 10px; border-radius:4px; font-size:12px; font-weight:bold; }
+        .status.active { background:#28a745; color:#fff; }
+        .status.blocked { background:#dc3545; color:#fff; }
+        .sync-status { background:#444; padding:10px; border-radius:8px; text-align:center; margin:10px 0; }
+        @media (max-width:480px) { body { padding:10px; } .date-picker, .user-row, .login-row { flex-direction:column; align-items:stretch; } }
+    </style>
+</head>
+<body>
+    <!-- Login Screen -->
+    <div id="loginScreen">
+        <div class="header">
+            <h1>🔥 Grill Master Tracker</h1>
+            <p>Worker ID + Password</p>
+        </div>
+        <div class="login-row">
+            <input type="text" id="loginId" placeholder="Worker ID (e.g. Laser01)">
+            <input type="password" id="loginPass" placeholder="Password">
+        </div>
+        <button onclick="login()">🔑 Login</button>
+    </div>
+
+    <!-- Worker Dashboard -->
+    <div id="workerScreen" class="hidden">
+        <div class="header">
+            <h1 id="welcomeMsg">Welcome</h1>
+            <button onclick="logout()" style="width:auto; background:#dc3545; padding:10px 20px;">Logout</button>
+        </div>
+        
+        <select id="role">
+            <option value="">Select Role</option>
+            <option value="laser">Laser Operator (sheets)</option>
+            <option value="welder">Welder (sets)</option>
+            <option value="painter">Painter (sets)</option>
+            <option value="packer">Packer (sets)</option>
+        </select>
+        
+        <input type="number" id="quantity" placeholder="Quantity completed today" min="0">
+        <div class="today-total" id="todayTotal">Daily Total: 0 RUB</div>
+        <div class="earnings" id="earningsPreview">Earnings Preview: 0 RUB</div>
+        <div class="sync-status" id="syncStatus">⏳ Syncing...</div>
+        
+        <button onclick="addEntry()">✅ Add Entry & Sync</button>
+        <button onclick="showMyEntries()" class="export">📊 My Entries Today</button>
+        <div id="workerLog" class="log"></div>
+    </div>
+
+    <!-- Admin Panel -->
+    <div id="adminScreen" class="hidden">
+        <div class="header">
+            <h1>👑 Admin Dashboard</h1>
+            <button onclick="logout()" style="width:auto; background:#dc3545; padding:10px 20px;">Logout</button>
+        </div>
+        
+        <div class="sheet-setup">
+            <h3>📊 Google Sheets Setup (Admin Only)</h3>
+            <input type="text" id="sheetId" placeholder="Google Sheet ID">
+            <button onclick="setupGoogleSheet()" class="sync">🔗 Connect Sheet</button>
+            <div id="sheetStatus"></div>
+        </div>
+        
+        <div class="admin-panel">
+            <h3>Today's Totals</h3>
+            <div id="adminToday"></div>
+        </div>
+
+        <!-- User Management & other sections same as before -->
+        <div class="user-mgmt">
+            <h3>👥 User Management</h3>
+            <div class="user-row">
+                <input type="text" id="newWorkerId" placeholder="Worker ID">
+                <input type="password" id="newWorkerPass" placeholder="Password">
+                <button onclick="createWorker()" class="admin">➕ Create</button>
+            </div>
+            <div id="usersList" class="users-list"></div>
+        </div>
+        
+        <button onclick="exportCSV('today')" class="export">📥 Download Today CSV</button>
+    </div>
+
+    <script>
+        const rates = { laser: 150, welder: 500, painter: 200, packer: 100 };
+        let entries = JSON.parse(localStorage.getItem('piecework') || '[]');
+        let users = JSON.parse(localStorage.getItem('workers') || '[{"id":"admin","password":"admin123","active":true}]');
+        let currentUser = null;
+        let googleSheetId = localStorage.getItem('sheetId') || '';
+        let gapiLoaded = false;
+
+        // Google Sheets API setup
+        function initGoogleSheets() {
+            gapi.load('client:auth2', () => {
+                gapi.client.init({
+                    apiKey: 'YOUR_GOOGLE_API_KEY', // Get from Google Cloud Console
+                    discoveryDocs: ['https://sheets.googleapis.com/$discovery/rest?version=v4'],
+                    scope: 'https://www.googleapis.com/auth/spreadsheets'
+                }).then(() => {
+                    gapiLoaded = true;
+                    if (googleSheetId) syncAllToSheet();
+                });
+            });
+        }
+
+        async function saveToGoogleSheet(entry) {
+            if (!gapiLoaded || !googleSheetId) return;
+            try {
+                await gapi.client.sheets.spreadsheets.values.append({
+                    spreadsheetId: googleSheetId,
+                    range: 'Sheet1!A:F',
+                    valueInputOption: 'RAW',
+                    resource: {
+                        values: [[entry.workerId, entry.role, entry.date, entry.quantity, entry.earnings, entry.time]]
+                    }
+                });
+                document.getElementById('syncStatus').textContent = '✅ Synced to Google Sheets';
+            } catch(e) {
+                console.error('Sheet sync failed:', e);
+            }
+        }
+
+        async function setupGoogleSheet() {
+            const sheetId = document.getElementById('sheetId').value;
+            if (!sheetId) return alert('Enter Sheet ID');
+            
+            googleSheetId = sheetId;
+            localStorage.setItem('sheetId', sheetId);
+            document.getElementById('sheetStatus').innerHTML = '<p>✅ Connected! Create Sheet1 with headers: Worker,Role,Date,Qty,Earnings,Time</p>';
+            
+            // Create headers if sheet is empty
+            await saveToGoogleSheet({workerId:'SYSTEM', role:'SETUP', date:'Headers', quantity:0, earnings:0, time:'Auto-sync active'});
+        }
+
+        function saveData() {
+            localStorage.setItem('piecework', JSON.stringify(entries));
+            localStorage.setItem('workers', JSON.stringify(users));
+        }
+
+        // Login & other functions same as before...
+        function login() {
+            const id = document.getElementById('loginId').value.trim().toLowerCase();
+            const pass = document.getElementById('loginPass').value;
+            if (!id || !pass) return alert('Enter ID and password');
+            
+            const user = users.find(u => u.id === id && u.password === pass && u.active);
+            if (!user) return alert('Invalid credentials');
+            
+            currentUser = id;
+            document.getElementById('loginScreen').classList.add('hidden');
+            document.getElementById(id === 'admin' ? 'adminScreen' : 'workerScreen').classList.remove('hidden');
+            
+            if (id !== 'admin') {
+                document.getElementById('welcomeMsg').textContent = `Welcome ${id.toUpperCase()}`;
+                showMyEntries();
+            } else {
+                showAdminToday();
+                showUsersList();
+                document.getElementById('sheetId').value = googleSheetId;
+            }
+            initGoogleSheets();
+        }
+
+        function addEntry() {
+            const role = document.getElementById('role').value;
+            const qty = parseInt(document.getElementById('quantity').value) || 0;
+            if (!role || qty === 0) return alert('Select role and enter quantity');
+            
+            const earnings = qty * rates[role];
+            const entry = { workerId: currentUser, role, quantity: qty, earnings, date: new Date().toDateString(), time: new Date().toLocaleTimeString() };
+            
+            entries.unshift(entry);
+            saveData();
+            saveToGoogleSheet(entry); // Sync to Google Sheets
+            
+            document.getElementById('quantity').value = ''; document.getElementById('role').value = '';
+            updatePreview(); showMyEntries();
+            alert(`Added & Synced! Earnings: ${earnings.toLocaleString()} RUB`);
+        }
+
+        // Rest of functions (updatePreview, showMyEntries, createWorker, etc.) same as previous version
+        // ... [Include all previous functions: updatePreview, updateTodayTotal, showMyEntries, createWorker, toggleWorker, deleteWorker, showUsersList, showAdminToday, exportCSV]
+
+        // Event listeners
+        document.getElementById('quantity').addEventListener('input', updatePreview);
+        document.getElementById('role').addEventListener('change', updatePreview);
+    </script>
+</body>
+</html>
